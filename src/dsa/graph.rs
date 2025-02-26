@@ -330,6 +330,14 @@ impl DirectedGraph {
         #[cfg(debug_assertions)]
         self.assert_cond();
     }
+    pub fn push_node_with_sizehint(&mut self,node:usize,hint:usize) {
+        if self.nodes.contains_key(&node) {return;}
+        // insert a node without adding edges
+        self.nodes.insert(node, Neighbours::with_capacity(hint));
+    }
+    pub fn push_node(&mut self,node:usize) {
+        self.push_node_with_sizehint(node, 0);
+    }
     pub fn push_pair(&mut self,start:usize,end:usize) {
         self.push_pair_with_sizehint(start, end, 0);
     }
@@ -407,12 +415,129 @@ impl<T> From<T> for DirectedGraph
     }
 }
 
+pub struct UnDirectedGraph {
+    edges_len:usize,
+    adjacency_list:HashMap<usize,HashSet<usize>>
+}
+
+impl Default for UnDirectedGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl UnDirectedGraph {
+    pub fn edges_len(&self) -> usize {
+        self.edges_len
+    }
+    pub fn nodes_len(&self) -> usize {
+        self.adjacency_list.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        if self.nodes_len() == 0 {
+            debug_assert!(self.edges_len() == 0);
+            return true;
+        }
+        return false;
+    }
+    pub fn new() -> Self {
+        Self {
+            edges_len:0,
+            adjacency_list:HashMap::with_hasher(
+                nohash::BuildNoHashHasher::default()
+            )
+        }
+    }
+    pub fn with_capacity(capacity:usize) -> Self {
+        Self {
+            edges_len:0,
+            adjacency_list:HashMap::with_capacity_and_hasher(
+                capacity,
+                nohash::BuildNoHashHasher::default())
+        }
+    }
+    // only push node, not adding edges
+    fn push_node<B:Borrow<usize>>(&mut self,node:B) {
+        let node = node.borrow();
+        if self.adjacency_list.contains_key(node) {
+            return;
+        }
+        let adj_nodes:HashSet<usize> = HashSet::with_capacity_and_hasher(
+            self.adjacency_list.capacity(),
+            nohash::BuildNoHashHasher::default());
+        self.adjacency_list.insert(*node,adj_nodes);
+    }
+    fn push_edge<B:Borrow<(usize,usize)>>(&mut self,edge:B) {
+        let (node1,node2) = edge.borrow();
+        let size_estimation = self.adjacency_list.capacity();
+        let mut is_edge_present= false;
+        if let Some(adj_nodes) = self.adjacency_list.get_mut(node1) {
+            // if an node2 is found in node1's adjacency list, turn is_edge_present to true;
+            // adj_nodes.insert() return false, if node2 is found, which means edge already present
+            if !adj_nodes.insert(*node2) {is_edge_present = true};
+        }else {
+            let mut adj_nodes:HashSet<usize> = HashSet::with_capacity_and_hasher(size_estimation,
+                nohash::BuildNoHashHasher::default());
+            adj_nodes.insert(*node2);
+            self.adjacency_list.insert(*node1, adj_nodes);
+        }
+        // insert node2 into graph, and register node1 as its neighbour
+        if let Some(adj_nodes) = self.adjacency_list.get_mut(node2) {
+            // if an node1 is found in node2's adjacency list, turn is_edge_present to true;
+            // adj_nodes.insert() return false, if node1 is found, which means edge already present
+            if !adj_nodes.insert(*node1) {is_edge_present = true};
+        }else {
+            let mut adj_nodes:HashSet<usize> = HashSet::with_capacity_and_hasher(size_estimation,
+                nohash::BuildNoHashHasher::default());
+            adj_nodes.insert(*node1);
+            self.adjacency_list.insert(*node2, adj_nodes);
+        }
+        // edge not present, increase edge count
+        if !is_edge_present {
+            self.edges_len += 1;
+        }
+    }
+    pub fn shrink_to_fit(&mut self) {
+        self.adjacency_list.shrink_to_fit();
+        for v in self.adjacency_list.values_mut() {
+            v.shrink_to_fit();
+        }
+    }
+}
+
+impl<T:AsRef<[(usize,usize)]>> From<T> for UnDirectedGraph {
+    fn from(value: T) -> Self {
+        let size_estimation = value.as_ref().len();
+        let mut new_graph = Self::with_capacity(size_estimation);
+        for edge in value.as_ref() {
+            new_graph.push_edge(edge);
+        }
+        new_graph.shrink_to_fit();
+        new_graph
+    }
+}
+
+impl<B:Borrow<(usize,usize)>> FromIterator<B> for UnDirectedGraph {
+    fn from_iter<T: IntoIterator<Item = B>>(iter: T) -> Self {
+        let iter = iter.into_iter();
+        let size_estimation = match iter.size_hint() {
+            (_,Some(n)) => {n},
+            (n,None) => {n}
+        };
+        let mut new_graph = Self::with_capacity(size_estimation);
+        for b in iter {
+            new_graph.push_edge(b.borrow());
+        }
+        new_graph.shrink_to_fit();
+        new_graph
+    }
+}
+
 #[cfg(test)]
 mod tests{
+    use rand::{Rng, RngCore};
 
-    use rand::RngCore;
-
-    use super::DirectedGraph;
+    use super::{DirectedGraph, HashSet, UnDirectedGraph};
 
     #[test]
     fn test_insert() {
@@ -429,6 +554,21 @@ mod tests{
         let order = new_graph.dfs(edges[0].0).unwrap();
         println!("{:?}",order);
         assert_eq!(order,nodes);
+    }
+    #[test]
+    fn test_new_undirected_graph() {
+        let mut rng = rand::rng();
+        let edge_len:usize = rng.random_range(1000..10000);
+        let mut edges:std::collections::HashSet<(usize,usize)> = std::collections::HashSet::new();
+        for _ in 0..edge_len {
+            edges.insert((rng.random_range(0..114514),rng.random_range(0..114514)));
+        }
+        let isolated_nodes_len:usize = rng.random_range(100..1000);
+
+        let mut new_graph:UnDirectedGraph = edges.iter().collect();
+        for n in 0..isolated_nodes_len {new_graph.push_node(n)};
+
+        assert!(new_graph.edges_len == edges.len())
     }
     #[test]
     fn test_layer_cycle() {
