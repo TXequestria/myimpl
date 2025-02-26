@@ -2,3 +2,4 @@
 pub mod dsa;
 pub mod linear_algebra;
 pub mod std_mimic;
+pub mod cryptography;
