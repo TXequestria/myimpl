@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, fmt::Debug};
+use std::{borrow::Borrow, fmt::Debug, vec};
 use rand::Rng;
 use thiserror::Error;
 
@@ -156,6 +156,9 @@ impl Matrix {
         v.truncate(row*col);
         debug_assert_eq!(row*col,v.len());
         Ok(Self { row_count: row, col_count: col, elements: v })
+    }
+    unsafe fn get_unchecked(&self,row:usize,col:usize) -> f64 {
+        unsafe {*self.elements.get_unchecked(row*self.col_count + col)}
     }
     pub fn get(&self,row:usize,col:usize) -> Result<f64> {
         debug_assert_eq!(self.row_count*self.col_count,self.elements.len());
@@ -359,39 +362,112 @@ impl Matrix {
     // return value 1: elimination src row, elimination dest row, elimination coefficient
     // value 2: Upper triangular matrix
     // value 3: permutation vector
-    pub fn lup(&self) -> Result<(Vec<(usize,usize,f64)>,Self,Vec<usize>)> {
+    fn lup_inplace(&mut self) -> Result<(Vec<(usize,usize,f64)>,Vec<usize>)> {
         debug_assert_eq!(self.row_count*self.col_count,self.elements.len());
         const EPS:f64 = 1e-12;
         if self.col_count != self.row_count {
             return Err(MatrixError::NonSqureError { row: self.row_count, col: self.col_count })
         }
         if self.col_count == 0 || self.row_count == 0 || self.elements.is_empty() {
-            return Ok((vec![],Self::default(),vec![]))
+            return Ok((vec![],vec![]))
         }
         let mut permutations:Vec<usize> = (0..self.row_count).collect();
-        let mut upper_triangle = self.clone();
+        //let mut upper_triangle = self.clone();
         let mut elimination_vec = Vec::with_capacity(self.col_count*(self.col_count-1)/2);
         for src_row in 0..self.row_count {
-            let (pivoit_row,pivoit) = upper_triangle.select_piviot_row(src_row, src_row)?;
+            let (pivoit_row,pivoit) = self.select_piviot_row(src_row, src_row)?;
             if pivoit.abs() < EPS {return Err(MatrixError::SingularError)}
             if pivoit_row != src_row {
                 permutations.swap(src_row, pivoit_row);
-                upper_triangle.row_exchange(src_row, pivoit_row, src_row)?;
+                self.row_exchange(src_row, pivoit_row, src_row)?;
             }
             for dest_row in src_row+1..self.row_count {
-                let coef = upper_triangle.get(dest_row, src_row)?/pivoit;
+                let coef = self.get(dest_row, src_row)?/pivoit;
                 if coef.abs() < EPS {continue}
-                upper_triangle.row_elimination(src_row, dest_row, src_row, coef)?;
+                self.row_elimination(src_row, dest_row, src_row, coef)?;
                 elimination_vec.push((src_row,dest_row,coef));
             }
         }
         elimination_vec.shrink_to_fit();
-        Ok((elimination_vec,upper_triangle,permutations))
+        Ok((elimination_vec,permutations))
+    }
+
+    pub fn lup(&self) -> Result<(Vec<(usize,usize,f64)>,Self,Vec<usize>)> {
+        let mut u = self.clone();
+        let (l,p) = u.lup_inplace()?;
+        Ok((l,u,p))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.col_count == 0 || self.row_count == 0 || self.elements.is_empty()
+    }
+
+    pub fn dimension(&self) -> (usize,usize) {
+        if self.is_empty() {return (0,0)}
+        (self.row_count,self.col_count)
+    }
+
+    pub fn dot(&self,rhs:&Self) -> Result<Self> {
+        if self.is_empty() || rhs.is_empty() {
+            return Ok(Self::new())
+        }
+        if self.col_count != rhs.row_count {
+            return Err(MatrixError::DimensionMismatch { 
+                matrix_size1: self.dimension(), 
+                matrix_size2: rhs.dimension() })
+        }
+        let product_row = self.row_count;
+        let product_col = rhs.col_count;
+        let dot_length = self.col_count;
+
+        let mut elements = Vec::with_capacity(product_row*product_col);
+
+        for index in 0..(product_row*product_col) {
+            let i = index / product_col;
+            let j = index % product_col;
+            let mut vec_dot_sum = 0.0;
+            for k in 0..dot_length {
+                vec_dot_sum += unsafe {
+                    self.get_unchecked(i,k)*rhs.get_unchecked(k,j)
+                };
+            }
+            elements.push(vec_dot_sum);
+        }
+
+        Ok(Self {
+            row_count:product_row,
+            col_count:product_col,
+            elements
+        })
     }
 
     // to do
-    pub fn transpose(&mut self) {
+    pub fn transpose_inplace(&mut self) {
+        use crate::dsa::bitset::BitSet;
+        BitSet::new();
         todo!()
+    }
+    pub fn transpose(&self) -> Self {
+        let t_row = self.col_count;
+        let t_col = self.row_count;
+
+        let mut new_vec = Vec::with_capacity(t_col*t_col);
+
+        for index in 0..(t_col*t_row) {
+            // index in new matrix is j*t_col + i;
+            let j = index/t_col;
+            let i = index%t_col;
+            new_vec.push(
+                unsafe{self.get_unchecked(i,j)}
+            )
+        }
+
+        Self {
+            row_count:t_row,
+            col_count:t_col,
+            elements:new_vec
+        }
+
     }
     // permutation
     // start with [1,2,3,4]....
@@ -424,13 +500,27 @@ mod tests {
     fn test_lu() {
         let mut rng = rand::rng();
         let size:usize = rng.random_range(20..100);
-        let test_matrix = Matrix::rand(size, size, &mut rng);
-        let (_,u,_) = test_matrix.lup().unwrap();
+        let mut test_matrix = Matrix::rand(size, size, &mut rng);
+        test_matrix.lup_inplace().unwrap();
         for i in 0..size {
             for j in 0..size {
-                if i == j {assert!(u.get(i, j).unwrap().abs() > 1e-12)}
-                if i > j {assert!(u.get(i, j).unwrap().abs() < 1e-12)}
+                if i == j {assert!(test_matrix.get(i, j).unwrap().abs() > 1e-12)}
+                if i > j {assert!(test_matrix.get(i, j).unwrap().abs() < 1e-12)}
             }
         }
+    }
+    #[test]
+    fn test_transpose() {
+        let mut rng = rand::rng();
+        let size1:usize = rng.random_range(20..100);
+        let size2:usize = rng.random_range(30..300);
+        let test_matrix = Matrix::rand(size1, size2, &mut rng);
+        let transpose = test_matrix.transpose();
+        for i in 0..size1 {
+            for j in 0..size2 {
+                assert_eq!(test_matrix.get(i, j).unwrap(),transpose.get(j, i).unwrap(),"index:({i},{j})")
+            }
+        }
+        test_matrix.dot(&transpose).unwrap();
     }
 }
