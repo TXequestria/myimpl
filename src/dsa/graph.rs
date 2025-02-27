@@ -43,13 +43,28 @@ struct Visited {
     unvisited_nodes:HashSet<usize>
 }
 
+impl From<&UnDirectedGraph> for Visited {
+    fn from(value: &UnDirectedGraph) -> Self {
+        let mut new_visited = Self::with_capacity(value.nodes_len());
+        for n in value.adjacency_list.keys() {
+            new_visited.push_node(n);
+        }
+        new_visited
+    }
+}
+
+impl From<UnDirectedGraph> for Visited {
+    fn from(value: UnDirectedGraph) -> Self {
+        Self::from(&value)
+    }
+}
+
 impl From<&DirectedGraph> for Visited {
     fn from(value: &DirectedGraph) -> Self {
         let mut new_visited = Self::with_capacity(value.nodes_len());
-        for (node,_) in value.nodes.iter() {
+        for node in value.nodes.keys() {
             new_visited.push_node(node);
         }
-        new_visited.shrink_to_fit();
         new_visited
     }
 }
@@ -108,10 +123,13 @@ impl Visited {
         }
         None
     }
-    fn shrink_to_fit(&mut self) {
+    fn is_finished(&self) -> bool {
+        self.unvisited_nodes.len() == 0
+    }
+    /* fn shrink_to_fit(&mut self) {
         self.unvisited_nodes.shrink_to_fit();
         self.visited_nodes.shrink_to_fit();
-    }
+    } */
 }
 
 impl<A:Borrow<usize>> FromIterator<A> for Visited {
@@ -125,7 +143,7 @@ impl<A:Borrow<usize>> FromIterator<A> for Visited {
         for elem in iter {
             v.push_node(elem.borrow());
         }
-        v.shrink_to_fit();
+        //v.shrink_to_fit();
         v
     }
 }
@@ -136,7 +154,7 @@ impl<T:AsRef<[usize]>> From<T> for Visited {
         for node in value.as_ref() {
             new_visit.push_node(node);
         }
-        new_visit.shrink_to_fit();
+        //new_visit.shrink_to_fit();
         new_visit
     }
 }
@@ -282,6 +300,7 @@ impl DirectedGraph {
         let neighbours = self.nodes.get(node)?.to.iter();
         Some(neighbours)
     }
+    #[cfg(debug_assertions)]
     fn assert_cond(&self) {
         for neighbours in self.nodes.values() {
             for node in neighbours.to.iter() {
@@ -296,6 +315,7 @@ impl DirectedGraph {
             }
         }
     }
+    #[cfg(debug_assertions)]
     fn assert_pair(&self,start:usize,end:usize) {
         let start_node = self.nodes.get(&start).expect(&format!("Start node {start} non-existent"));
         let end_node = self.nodes.get(&end).expect(&format!("End node {end} non-existent"));
@@ -349,8 +369,8 @@ impl DirectedGraph {
         let mut stack = Vec::with_capacity(self.nodes_len());
         let mut order = Vec::with_capacity(self.nodes_len());
         stack.push(start_node);
-        while stack.len() > 0 {
-            let current = stack.pop()?;
+        while let Some(current) = stack.pop() {
+            //let current = stack.pop()?;
             if visited.is_visited(&current)? {
                 continue;
             }
@@ -466,6 +486,7 @@ impl UnDirectedGraph {
             self.adjacency_list.capacity(),
             nohash::BuildNoHashHasher::default());
         self.adjacency_list.insert(*node,adj_nodes);
+        //debug_assert!(self.assert_integrety());
     }
     fn push_edge<B:Borrow<(usize,usize)>>(&mut self,edge:B) {
         let (node1,node2) = edge.borrow();
@@ -496,12 +517,61 @@ impl UnDirectedGraph {
         if !is_edge_present {
             self.edges_len += 1;
         }
+        //debug_assert!(self.assert_integrety());
     }
+
     pub fn shrink_to_fit(&mut self) {
         self.adjacency_list.shrink_to_fit();
         for v in self.adjacency_list.values_mut() {
             v.shrink_to_fit();
         }
+    }
+}
+
+impl UnDirectedGraph {
+    #[cfg(debug_assertions)]
+    fn is_edge_exist<N1:Borrow<usize>,N2:Borrow<usize>>(&self,node1:N1,node2:N2) -> bool{
+        let node1 = node1.borrow();
+        let node2 = node2.borrow();
+        let mut edge_1_to_2_exsits = false;
+        if let Some(node1_adj) = self.adjacency_list.get(node1) {
+            edge_1_to_2_exsits = node1_adj.contains(node2);
+        }
+        if node1 == node2 {
+            return edge_1_to_2_exsits;
+        }
+        let mut edge_2_to_1_exsists = false;
+        if let Some(node2_adj) = self.adjacency_list.get(node2) {
+            edge_2_to_1_exsists = node2_adj.contains(node1);
+        }
+        // for undirected graph, an edge exists if a -> b and b -> a
+        edge_1_to_2_exsits && edge_2_to_1_exsists
+    }
+
+    #[allow(unused)]
+    #[cfg(debug_assertions)]
+    fn assert_integrety(&self) {
+        let mut edge_count = 0;
+        let mut visited:Visited = self.into();
+        for (node1,node1_adj) in &self.adjacency_list {
+            if visited.is_finished() {break;}
+            if let Some(true) = visited.is_visited(node1) {
+                continue;
+            }
+            for node2 in node1_adj {
+                // node2 is already checked as src node, which means all node2->* has been checked
+                // so skip checking node1 -> node2
+                if let Some(true) = visited.is_visited(node2) {
+                    continue;
+                }
+                // we have node1, and node2 is in node1's adj list
+                debug_assert!(self.is_edge_exist(node1,node2));
+                edge_count += 1;
+            }
+            // all node1 -> * has been checked, mark node1 as done
+            visited.visit(node1);
+        }
+        debug_assert_eq!(edge_count,self.edges_len)
     }
 }
 
@@ -512,6 +582,7 @@ impl<T:AsRef<[(usize,usize)]>> From<T> for UnDirectedGraph {
         for edge in value.as_ref() {
             new_graph.push_edge(edge);
         }
+        //debug_assert!(new_graph.assert_integrety());
         new_graph.shrink_to_fit();
         new_graph
     }
@@ -529,6 +600,7 @@ impl<B:Borrow<(usize,usize)>> FromIterator<B> for UnDirectedGraph {
             new_graph.push_edge(b.borrow());
         }
         new_graph.shrink_to_fit();
+        //debug_assert!(new_graph.assert_integrety());
         new_graph
     }
 }
@@ -537,7 +609,7 @@ impl<B:Borrow<(usize,usize)>> FromIterator<B> for UnDirectedGraph {
 mod tests{
     use rand::{Rng, RngCore};
 
-    use super::{DirectedGraph, HashSet, UnDirectedGraph};
+    use super::{DirectedGraph, UnDirectedGraph};
 
     #[test]
     fn test_insert() {
@@ -566,9 +638,10 @@ mod tests{
         let isolated_nodes_len:usize = rng.random_range(100..1000);
 
         let mut new_graph:UnDirectedGraph = edges.iter().collect();
-        for n in 0..isolated_nodes_len {new_graph.push_node(n)};
+        for _ in 0..isolated_nodes_len {new_graph.push_node(rng.random_range(0..1145141919810))};
 
-        assert!(new_graph.edges_len == edges.len())
+        assert!(new_graph.edges_len == edges.len());
+        new_graph.assert_integrety()
     }
     #[test]
     fn test_layer_cycle() {
