@@ -260,19 +260,15 @@ impl Matrix {
         debug_assert!(row2_end <= self.elements.len());
 
         // either row1_start < row1_end < row2_start, or row2_start < row2_end < row1_start
-        debug_assert!(row1_end <= row2_start || row2_end <= row1_start, "row1_end:{row1_end}, row2:end:{row2_end}, row1_start:{row1_start}, row2_start:{row2_start}");
+        debug_assert!(row1_end <= row2_start || row2_end <= row1_start);
 
         //safety: we guarded the entire matrix behind &mut self, so no race condition
         // row1 and row2 are never overlapping, or the above debug assertion fails
 
         unsafe {
             let row1 =  self.elements.as_mut_ptr().add(row1_start);
-            let row1 = std::slice::from_raw_parts_mut(row1, swap_len);
             let row2 = self.elements.as_mut_ptr().add(row2_start);
-            let row2 = std::slice::from_raw_parts_mut(row2, swap_len);
-
-            //this is safe after row1 and row2 slices are constructed, but better not let them escape the unsafe scope
-            row2.swap_with_slice(row1);
+            std::ptr::swap_nonoverlapping(row1, row2, swap_len);
         };
 
         Ok(())
