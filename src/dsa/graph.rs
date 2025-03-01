@@ -1,8 +1,93 @@
-use std::borrow::Borrow;
+use std::{borrow::Borrow, ops::Deref};
 
 type HashMap<K,V> = std::collections::hash_map::HashMap<K,V,nohash::BuildNoHashHasher<usize>>;
 type HashSet<K> = std::collections::hash_set::HashSet<K,nohash::BuildNoHashHasher<usize>>;
 
+#[derive(Clone, Copy)]
+pub enum NodeOrEdge {
+    Node(usize),
+    Edge(usize,usize)
+}
+
+pub trait AsNodeOrEdge {
+    fn parse(&self) -> NodeOrEdge;
+}
+
+impl AsNodeOrEdge for usize {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Node(*self)
+    }
+}
+
+impl AsNodeOrEdge for (usize,usize) {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(self.0, self.1)
+    }
+}
+
+impl AsNodeOrEdge for (&usize,usize) {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(*self.0, self.1)
+    }
+}
+
+impl AsNodeOrEdge for (usize,&usize) {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(self.0, *self.1)
+    }
+}
+
+impl AsNodeOrEdge for (&usize,&usize) {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(*self.0, *self.1)
+    }
+}
+
+impl AsNodeOrEdge for [usize;2] {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(self[0], self[1])
+    }
+}
+
+impl AsNodeOrEdge for [usize;1] {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Node(self[0])
+    }
+}
+
+impl AsNodeOrEdge for [&usize;2] {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(*self[0], *self[1])
+    }
+}
+
+impl AsNodeOrEdge for [&usize;1] {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Node(*self[0])
+    }
+}
+
+impl AsNodeOrEdge for &[usize] {
+    fn parse(&self) -> NodeOrEdge {
+        match self.len() {
+            1 => NodeOrEdge::Node(self[0]),
+            2 => NodeOrEdge::Edge(self[0], self[1]),
+            _ => panic!("only slice with len 1 or 2 can be converted")
+        }
+    }
+}
+
+impl<T:AsNodeOrEdge + ?Sized> AsNodeOrEdge for &T {
+    fn parse(&self) -> NodeOrEdge {
+        (*self).parse()
+    }
+}
+
+impl<T:AsNodeOrEdge + ?Sized> AsNodeOrEdge for Box<T> {
+    fn parse(&self) -> NodeOrEdge {
+        self.deref().parse()
+    }
+}
 
 #[derive(Clone)]
 struct Neighbours {
@@ -406,7 +491,7 @@ impl DirectedGraph {
     }
 }
 
-impl<A:Borrow<(usize,usize)>> FromIterator<A> for DirectedGraph {
+impl<A:AsNodeOrEdge> FromIterator<A> for DirectedGraph {
     fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         let iter = iter.into_iter();
         let size = match iter.size_hint() {
@@ -414,12 +499,33 @@ impl<A:Borrow<(usize,usize)>> FromIterator<A> for DirectedGraph {
             (lower,None) => {lower}
         };
         let mut new_graph = Self::with_capacity(size);
-        for pair in iter {
-            let (start,end) = pair.borrow();
-            new_graph.push_pair_with_sizehint(*start, *end,size);
+        for node_or_edge in iter {
+            match node_or_edge.parse() {
+                NodeOrEdge::Node(n) => {
+                    new_graph.push_node_with_sizehint(n, size);
+                },
+                NodeOrEdge::Edge(start,end ) => {
+                    new_graph.push_pair_with_sizehint(start, end,size);
+                }
+            }
         }
         new_graph.shrink_to_fit();
         new_graph
+    }
+}
+
+impl<A:AsNodeOrEdge> Extend<A> for DirectedGraph {
+    fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T) {
+        for node_or_edge in iter {
+            match node_or_edge.parse() {
+                NodeOrEdge::Edge(start, end) => {
+                    self.push_pair(start,end);
+                },
+                NodeOrEdge::Node(node) => {
+                    self.push_node(node);
+                }
+            }
+        }
     }
 }
 
@@ -589,16 +695,38 @@ impl<T:AsRef<[(usize,usize)]>> From<T> for UnDirectedGraph {
     }
 }
 
-impl<B:Borrow<(usize,usize)>> FromIterator<B> for UnDirectedGraph {
-    fn from_iter<T: IntoIterator<Item = B>>(iter: T) -> Self {
+impl<A:AsNodeOrEdge> Extend<A> for UnDirectedGraph {
+    fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T) {
+        for node_or_edge in iter {
+            match node_or_edge.parse() {
+                NodeOrEdge::Edge(start, end) => {
+                    self.push_edge((start,end));
+                },
+                NodeOrEdge::Node(node) => {
+                    self.push_node(node);
+                }
+            }
+        }
+    }
+}
+
+impl<A:AsNodeOrEdge> FromIterator<A> for UnDirectedGraph {
+    fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         let iter = iter.into_iter();
         let size_estimation = match iter.size_hint() {
             (_,Some(n)) => {n},
             (n,None) => {n}
         };
         let mut new_graph = Self::with_capacity(size_estimation);
-        for b in iter {
-            new_graph.push_edge(b.borrow());
+        for node_or_edge in iter {
+            match node_or_edge.parse() {
+                NodeOrEdge::Edge(start, end) => {
+                    new_graph.push_edge((start,end));
+                },
+                NodeOrEdge::Node(node) => {
+                    new_graph.push_node(node);
+                }
+            }
         }
         new_graph.shrink_to_fit();
         //debug_assert!(new_graph.assert_integrety());
@@ -610,6 +738,8 @@ impl<B:Borrow<(usize,usize)>> FromIterator<B> for UnDirectedGraph {
 mod tests{
     use rand::{Rng, RngCore};
 
+    use crate::dsa::graph::AsNodeOrEdge;
+
     use super::{DirectedGraph, UnDirectedGraph};
 
     #[test]
@@ -619,12 +749,12 @@ mod tests{
         for _ in 0..16 {
             nodes.push(rng.next_u64() as usize);
         }
-        let mut edges:Vec<(usize,usize)> = vec![];
+        let mut edges:Vec<Box<dyn AsNodeOrEdge>> = vec![];
         for i in 0..nodes.len() - 1 {
-            edges.push((nodes[i],nodes[i+1]))
+            edges.push(Box::new((nodes[i],nodes[i+1])))
         }
-        let new_graph = DirectedGraph::from(&edges);
-        let order = new_graph.dfs(edges[0].0).unwrap();
+        let new_graph:DirectedGraph = edges.iter().collect();
+        let order = new_graph.dfs(nodes[0]).unwrap();
         println!("{:?}",order);
         assert_eq!(order,nodes);
     }
