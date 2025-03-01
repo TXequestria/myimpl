@@ -259,15 +259,13 @@ impl Matrix {
         debug_assert!(row1_end <= self.elements.len());
         debug_assert!(row2_end <= self.elements.len());
 
-        // either row1_start < row1_end < row2_start, or row2_start < row2_end < row1_start
-        debug_assert!(row1_end <= row2_start || row2_end <= row1_start);
-
         //safety: we guarded the entire matrix behind &mut self, so no race condition
-        // row1 and row2 are never overlapping, or the above debug assertion fails
 
         unsafe {
             let row1 =  self.elements.as_mut_ptr().add(row1_start);
             let row2 = self.elements.as_mut_ptr().add(row2_start);
+            // row1 and row2 are never overlapping, or the below assertion fails
+            // std::ptr::swap_nonoverlapping checks overlap
             std::ptr::swap_nonoverlapping(row1, row2, swap_len);
         };
 
@@ -316,6 +314,8 @@ impl Matrix {
         // no overlapping
         debug_assert!(dest_end <= src_start || src_end <= dest_start);
 
+        // we have to read & write to different parts of the same &mut matrix
+        // so we can't uphold the borrowing rule. go unsafe here
         let (src_row,dest_row) = unsafe {
             let src_row =  self.elements.as_ptr().add(src_start);
             let src_row = std::slice::from_raw_parts(src_row, elimination_len);
