@@ -412,7 +412,7 @@ impl DirectedGraph {
             panic!("Edge {start} -> {end} defined, but {start} is not in {end}'s from list");
         }
     }
-    pub fn push_pair_with_sizehint(&mut self,start:usize,end:usize,hint:usize) {
+    fn push_pair_with_sizehint(&mut self,start:usize,end:usize,hint:usize) {
         if let Some(neighbours) = self.nodes.get_mut(&start) {
             neighbours.to.insert(end);
         }else{
@@ -435,17 +435,32 @@ impl DirectedGraph {
         #[cfg(debug_assertions)]
         self.assert_cond();
     }
-    pub fn push_node_with_sizehint(&mut self,node:usize,hint:usize) {
+    fn push_node_with_sizehint(&mut self,node:usize,hint:usize) {
         if self.nodes.contains_key(&node) {return;}
         // insert a node without adding edges
         self.nodes.insert(node, Neighbours::with_capacity(hint));
     }
-    pub fn push_node(&mut self,node:usize) {
+    fn push_node(&mut self,node:usize) {
         self.push_node_with_sizehint(node, 0);
     }
-    pub fn push_pair(&mut self,start:usize,end:usize) {
+    fn push_pair(&mut self,start:usize,end:usize) {
         self.push_pair_with_sizehint(start, end, 0);
     }
+
+    pub fn push<P:AsNodeOrEdge>(&mut self,node_or_edge:P) {
+        match node_or_edge.parse() {
+            NodeOrEdge::Node(node) => self.push_node(node),
+            NodeOrEdge::Edge(start, end) => self.push_pair(start, end),
+        }
+    }
+
+    pub fn push_with_sizehint<P:AsNodeOrEdge>(&mut self,node_or_edge:P,hint:usize) {
+        match node_or_edge.parse() {
+            NodeOrEdge::Node(node) => self.push_node_with_sizehint(node,hint),
+            NodeOrEdge::Edge(start, end) => self.push_pair_with_sizehint(start, end,hint),
+        }
+    }
+
     pub fn dfs(&self,start_node:usize) -> Option<Vec<usize>> {
         if !self.nodes.contains_key(&start_node) {
             return None;
@@ -583,42 +598,49 @@ impl UnDirectedGraph {
                 nohash::BuildNoHashHasher::default())
         }
     }
+
+    pub fn push<P:AsNodeOrEdge>(&mut self,node_or_edge:P) {
+        match node_or_edge.parse() {
+            NodeOrEdge::Node(node) => self.push_node(node),
+            NodeOrEdge::Edge(start, end) => self.push_edge((start, end)),
+        }
+    }
+
     // only push node, not adding edges
-    fn push_node<B:Borrow<usize>>(&mut self,node:B) {
-        let node = node.borrow();
-        if self.adjacency_list.contains_key(node) {
+    fn push_node(&mut self,node:usize) {
+        if self.adjacency_list.contains_key(&node) {
             return;
         }
         let adj_nodes:HashSet<usize> = HashSet::with_capacity_and_hasher(
             self.adjacency_list.capacity(),
             nohash::BuildNoHashHasher::default());
-        self.adjacency_list.insert(*node,adj_nodes);
+        self.adjacency_list.insert(node,adj_nodes);
         //debug_assert!(self.assert_integrety());
     }
-    fn push_edge<B:Borrow<(usize,usize)>>(&mut self,edge:B) {
-        let (node1,node2) = edge.borrow();
+    fn push_edge(&mut self,edge:(usize,usize)) {
         let size_estimation = self.adjacency_list.capacity();
+        let (node1,node2) = edge;
         let mut is_edge_present= false;
-        if let Some(adj_nodes) = self.adjacency_list.get_mut(node1) {
+        if let Some(adj_nodes) = self.adjacency_list.get_mut(&node1) {
             // if an node2 is found in node1's adjacency list, turn is_edge_present to true;
             // adj_nodes.insert() return false, if node2 is found, which means edge already present
-            if !adj_nodes.insert(*node2) {is_edge_present = true};
+            if !adj_nodes.insert(node2) {is_edge_present = true};
         }else {
             let mut adj_nodes:HashSet<usize> = HashSet::with_capacity_and_hasher(size_estimation,
                 nohash::BuildNoHashHasher::default());
-            adj_nodes.insert(*node2);
-            self.adjacency_list.insert(*node1, adj_nodes);
+            adj_nodes.insert(node2);
+            self.adjacency_list.insert(node1, adj_nodes);
         }
         // insert node2 into graph, and register node1 as its neighbour
-        if let Some(adj_nodes) = self.adjacency_list.get_mut(node2) {
+        if let Some(adj_nodes) = self.adjacency_list.get_mut(&node2) {
             // if an node1 is found in node2's adjacency list, turn is_edge_present to true;
             // adj_nodes.insert() return false, if node1 is found, which means edge already present
-            if !adj_nodes.insert(*node1) {is_edge_present = true};
+            if !adj_nodes.insert(node1) {is_edge_present = true};
         }else {
             let mut adj_nodes:HashSet<usize> = HashSet::with_capacity_and_hasher(size_estimation,
                 nohash::BuildNoHashHasher::default());
-            adj_nodes.insert(*node1);
-            self.adjacency_list.insert(*node2, adj_nodes);
+            adj_nodes.insert(node1);
+            self.adjacency_list.insert(node2, adj_nodes);
         }
         // edge not present, increase edge count
         if !is_edge_present {
@@ -687,7 +709,7 @@ impl<T:AsRef<[(usize,usize)]>> From<T> for UnDirectedGraph {
         let size_estimation = value.as_ref().len();
         let mut new_graph = Self::with_capacity(size_estimation);
         for edge in value.as_ref() {
-            new_graph.push_edge(edge);
+            new_graph.push_edge(*edge);
         }
         //debug_assert!(new_graph.assert_integrety());
         new_graph.shrink_to_fit();
