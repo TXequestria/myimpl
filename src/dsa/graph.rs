@@ -1,8 +1,108 @@
-use std::borrow::Borrow;
+use std::{borrow::Borrow, ops::Deref};
 
 type HashMap<K,V> = std::collections::hash_map::HashMap<K,V,nohash::BuildNoHashHasher<usize>>;
 type HashSet<K> = std::collections::hash_set::HashSet<K,nohash::BuildNoHashHasher<usize>>;
 
+#[derive(Clone, Copy)]
+pub enum NodeOrEdge {
+    Node(usize),
+    Edge(usize,usize)
+}
+
+impl NodeOrEdge {
+    pub fn node(node:usize) -> Self {
+        Self::Node(node)
+    }
+    pub fn edge(start:usize,end:usize) -> Self {
+        Self::Edge(start, end)
+    }
+}
+
+pub trait AsNodeOrEdge {
+    fn parse(&self) -> NodeOrEdge;
+}
+
+impl AsNodeOrEdge for NodeOrEdge {
+    fn parse(&self) -> NodeOrEdge {
+        *self
+    }
+}
+
+impl AsNodeOrEdge for usize {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Node(*self)
+    }
+}
+
+impl AsNodeOrEdge for (usize,usize) {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(self.0, self.1)
+    }
+}
+
+impl AsNodeOrEdge for (&usize,usize) {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(*self.0, self.1)
+    }
+}
+
+impl AsNodeOrEdge for (usize,&usize) {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(self.0, *self.1)
+    }
+}
+
+impl AsNodeOrEdge for (&usize,&usize) {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(*self.0, *self.1)
+    }
+}
+
+impl AsNodeOrEdge for [usize;2] {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(self[0], self[1])
+    }
+}
+
+impl AsNodeOrEdge for [usize;1] {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Node(self[0])
+    }
+}
+
+impl AsNodeOrEdge for [&usize;2] {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Edge(*self[0], *self[1])
+    }
+}
+
+impl AsNodeOrEdge for [&usize;1] {
+    fn parse(&self) -> NodeOrEdge {
+        NodeOrEdge::Node(*self[0])
+    }
+}
+
+impl AsNodeOrEdge for &[usize] {
+    fn parse(&self) -> NodeOrEdge {
+        match self.len() {
+            1 => NodeOrEdge::Node(self[0]),
+            2 => NodeOrEdge::Edge(self[0], self[1]),
+            _ => panic!("only slice with len 1 or 2 can be converted")
+        }
+    }
+}
+
+impl<T:AsNodeOrEdge + ?Sized> AsNodeOrEdge for &T {
+    fn parse(&self) -> NodeOrEdge {
+        (*self).parse()
+    }
+}
+
+impl<T:AsNodeOrEdge + ?Sized> AsNodeOrEdge for Box<T> {
+    fn parse(&self) -> NodeOrEdge {
+        self.deref().parse()
+    }
+}
 
 #[derive(Clone)]
 struct Neighbours {
@@ -327,7 +427,7 @@ impl DirectedGraph {
             panic!("Edge {start} -> {end} defined, but {start} is not in {end}'s from list");
         }
     }
-    pub fn push_pair_with_sizehint(&mut self,start:usize,end:usize,hint:usize) {
+    fn push_pair_with_sizehint(&mut self,start:usize,end:usize,hint:usize) {
         if let Some(neighbours) = self.nodes.get_mut(&start) {
             neighbours.to.insert(end);
         }else{
@@ -350,17 +450,32 @@ impl DirectedGraph {
         #[cfg(debug_assertions)]
         self.assert_cond();
     }
-    pub fn push_node_with_sizehint(&mut self,node:usize,hint:usize) {
+    fn push_node_with_sizehint(&mut self,node:usize,hint:usize) {
         if self.nodes.contains_key(&node) {return;}
         // insert a node without adding edges
         self.nodes.insert(node, Neighbours::with_capacity(hint));
     }
-    pub fn push_node(&mut self,node:usize) {
+    fn push_node(&mut self,node:usize) {
         self.push_node_with_sizehint(node, 0);
     }
-    pub fn push_pair(&mut self,start:usize,end:usize) {
+    fn push_pair(&mut self,start:usize,end:usize) {
         self.push_pair_with_sizehint(start, end, 0);
     }
+
+    pub fn push<P:AsNodeOrEdge>(&mut self,node_or_edge:P) {
+        match node_or_edge.parse() {
+            NodeOrEdge::Node(node) => self.push_node(node),
+            NodeOrEdge::Edge(start, end) => self.push_pair(start, end),
+        }
+    }
+
+    pub fn push_with_sizehint<P:AsNodeOrEdge>(&mut self,node_or_edge:P,hint:usize) {
+        match node_or_edge.parse() {
+            NodeOrEdge::Node(node) => self.push_node_with_sizehint(node,hint),
+            NodeOrEdge::Edge(start, end) => self.push_pair_with_sizehint(start, end,hint),
+        }
+    }
+
     pub fn dfs(&self,start_node:usize) -> Option<Vec<usize>> {
         if !self.nodes.contains_key(&start_node) {
             return None;
@@ -392,6 +507,7 @@ impl DirectedGraph {
         while !degree_map.is_finished() {
             let current_layer = degree_map.start_nodes();
             if current_layer.is_empty() {
+                layers.shrink_to_fit();
                 degree_map.shrink_to_fit();
                 return Err((layers,degree_map.nonzero))
             }
@@ -405,7 +521,7 @@ impl DirectedGraph {
     }
 }
 
-impl<A:Borrow<(usize,usize)>> FromIterator<A> for DirectedGraph {
+impl<A:AsNodeOrEdge> FromIterator<A> for DirectedGraph {
     fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         let iter = iter.into_iter();
         let size = match iter.size_hint() {
@@ -413,12 +529,33 @@ impl<A:Borrow<(usize,usize)>> FromIterator<A> for DirectedGraph {
             (lower,None) => {lower}
         };
         let mut new_graph = Self::with_capacity(size);
-        for pair in iter {
-            let (start,end) = pair.borrow();
-            new_graph.push_pair_with_sizehint(*start, *end,size);
+        for node_or_edge in iter {
+            match node_or_edge.parse() {
+                NodeOrEdge::Node(n) => {
+                    new_graph.push_node_with_sizehint(n, size);
+                },
+                NodeOrEdge::Edge(start,end ) => {
+                    new_graph.push_pair_with_sizehint(start, end,size);
+                }
+            }
         }
         new_graph.shrink_to_fit();
         new_graph
+    }
+}
+
+impl<A:AsNodeOrEdge> Extend<A> for DirectedGraph {
+    fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T) {
+        for node_or_edge in iter {
+            match node_or_edge.parse() {
+                NodeOrEdge::Edge(start, end) => {
+                    self.push_pair(start,end);
+                },
+                NodeOrEdge::Node(node) => {
+                    self.push_node(node);
+                }
+            }
+        }
     }
 }
 
@@ -476,42 +613,49 @@ impl UnDirectedGraph {
                 nohash::BuildNoHashHasher::default())
         }
     }
+
+    pub fn push<P:AsNodeOrEdge>(&mut self,node_or_edge:P) {
+        match node_or_edge.parse() {
+            NodeOrEdge::Node(node) => self.push_node(node),
+            NodeOrEdge::Edge(start, end) => self.push_edge((start, end)),
+        }
+    }
+
     // only push node, not adding edges
-    fn push_node<B:Borrow<usize>>(&mut self,node:B) {
-        let node = node.borrow();
-        if self.adjacency_list.contains_key(node) {
+    fn push_node(&mut self,node:usize) {
+        if self.adjacency_list.contains_key(&node) {
             return;
         }
         let adj_nodes:HashSet<usize> = HashSet::with_capacity_and_hasher(
             self.adjacency_list.capacity(),
             nohash::BuildNoHashHasher::default());
-        self.adjacency_list.insert(*node,adj_nodes);
+        self.adjacency_list.insert(node,adj_nodes);
         //debug_assert!(self.assert_integrety());
     }
-    fn push_edge<B:Borrow<(usize,usize)>>(&mut self,edge:B) {
-        let (node1,node2) = edge.borrow();
+    fn push_edge(&mut self,edge:(usize,usize)) {
         let size_estimation = self.adjacency_list.capacity();
+        let (node1,node2) = edge;
         let mut is_edge_present= false;
-        if let Some(adj_nodes) = self.adjacency_list.get_mut(node1) {
+        if let Some(adj_nodes) = self.adjacency_list.get_mut(&node1) {
             // if an node2 is found in node1's adjacency list, turn is_edge_present to true;
             // adj_nodes.insert() return false, if node2 is found, which means edge already present
-            if !adj_nodes.insert(*node2) {is_edge_present = true};
+            if !adj_nodes.insert(node2) {is_edge_present = true};
         }else {
             let mut adj_nodes:HashSet<usize> = HashSet::with_capacity_and_hasher(size_estimation,
                 nohash::BuildNoHashHasher::default());
-            adj_nodes.insert(*node2);
-            self.adjacency_list.insert(*node1, adj_nodes);
+            adj_nodes.insert(node2);
+            self.adjacency_list.insert(node1, adj_nodes);
         }
         // insert node2 into graph, and register node1 as its neighbour
-        if let Some(adj_nodes) = self.adjacency_list.get_mut(node2) {
+        if let Some(adj_nodes) = self.adjacency_list.get_mut(&node2) {
             // if an node1 is found in node2's adjacency list, turn is_edge_present to true;
             // adj_nodes.insert() return false, if node1 is found, which means edge already present
-            if !adj_nodes.insert(*node1) {is_edge_present = true};
+            if !adj_nodes.insert(node1) {is_edge_present = true};
         }else {
             let mut adj_nodes:HashSet<usize> = HashSet::with_capacity_and_hasher(size_estimation,
                 nohash::BuildNoHashHasher::default());
-            adj_nodes.insert(*node1);
-            self.adjacency_list.insert(*node2, adj_nodes);
+            adj_nodes.insert(node1);
+            self.adjacency_list.insert(node2, adj_nodes);
         }
         // edge not present, increase edge count
         if !is_edge_present {
@@ -580,7 +724,7 @@ impl<T:AsRef<[(usize,usize)]>> From<T> for UnDirectedGraph {
         let size_estimation = value.as_ref().len();
         let mut new_graph = Self::with_capacity(size_estimation);
         for edge in value.as_ref() {
-            new_graph.push_edge(edge);
+            new_graph.push_edge(*edge);
         }
         //debug_assert!(new_graph.assert_integrety());
         new_graph.shrink_to_fit();
@@ -588,16 +732,38 @@ impl<T:AsRef<[(usize,usize)]>> From<T> for UnDirectedGraph {
     }
 }
 
-impl<B:Borrow<(usize,usize)>> FromIterator<B> for UnDirectedGraph {
-    fn from_iter<T: IntoIterator<Item = B>>(iter: T) -> Self {
+impl<A:AsNodeOrEdge> Extend<A> for UnDirectedGraph {
+    fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T) {
+        for node_or_edge in iter {
+            match node_or_edge.parse() {
+                NodeOrEdge::Edge(start, end) => {
+                    self.push_edge((start,end));
+                },
+                NodeOrEdge::Node(node) => {
+                    self.push_node(node);
+                }
+            }
+        }
+    }
+}
+
+impl<A:AsNodeOrEdge> FromIterator<A> for UnDirectedGraph {
+    fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         let iter = iter.into_iter();
         let size_estimation = match iter.size_hint() {
             (_,Some(n)) => {n},
             (n,None) => {n}
         };
         let mut new_graph = Self::with_capacity(size_estimation);
-        for b in iter {
-            new_graph.push_edge(b.borrow());
+        for node_or_edge in iter {
+            match node_or_edge.parse() {
+                NodeOrEdge::Edge(start, end) => {
+                    new_graph.push_edge((start,end));
+                },
+                NodeOrEdge::Node(node) => {
+                    new_graph.push_node(node);
+                }
+            }
         }
         new_graph.shrink_to_fit();
         //debug_assert!(new_graph.assert_integrety());
@@ -609,6 +775,8 @@ impl<B:Borrow<(usize,usize)>> FromIterator<B> for UnDirectedGraph {
 mod tests{
     use rand::{Rng, RngCore};
 
+    use crate::dsa::graph::AsNodeOrEdge;
+
     use super::{DirectedGraph, UnDirectedGraph};
 
     #[test]
@@ -618,12 +786,12 @@ mod tests{
         for _ in 0..16 {
             nodes.push(rng.next_u64() as usize);
         }
-        let mut edges:Vec<(usize,usize)> = vec![];
+        let mut edges:Vec<Box<dyn AsNodeOrEdge>> = vec![];
         for i in 0..nodes.len() - 1 {
-            edges.push((nodes[i],nodes[i+1]))
+            edges.push(Box::new((nodes[i],nodes[i+1])))
         }
-        let new_graph = DirectedGraph::from(&edges);
-        let order = new_graph.dfs(edges[0].0).unwrap();
+        let new_graph:DirectedGraph = edges.iter().collect();
+        let order = new_graph.dfs(nodes[0]).unwrap();
         println!("{:?}",order);
         assert_eq!(order,nodes);
     }
