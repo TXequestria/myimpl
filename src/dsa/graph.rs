@@ -392,6 +392,7 @@ impl DirectedGraph {
         while !degree_map.is_finished() {
             let current_layer = degree_map.start_nodes();
             if current_layer.is_empty() {
+                layers.shrink_to_fit();
                 degree_map.shrink_to_fit();
                 return Err((layers,degree_map.nonzero))
             }
