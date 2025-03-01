@@ -2,4 +2,3 @@
 pub mod dsa;
 pub mod linear_algebra;
 pub mod cryptography;
-pub mod optical_network;

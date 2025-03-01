@@ -9,8 +9,23 @@ pub enum NodeOrEdge {
     Edge(usize,usize)
 }
 
+impl NodeOrEdge {
+    pub fn node(node:usize) -> Self {
+        Self::Node(node)
+    }
+    pub fn edge(start:usize,end:usize) -> Self {
+        Self::Edge(start, end)
+    }
+}
+
 pub trait AsNodeOrEdge {
     fn parse(&self) -> NodeOrEdge;
+}
+
+impl AsNodeOrEdge for NodeOrEdge {
+    fn parse(&self) -> NodeOrEdge {
+        *self
+    }
 }
 
 impl AsNodeOrEdge for usize {
