@@ -1,4 +1,4 @@
-use std::{borrow::Borrow, fmt::Debug, vec};
+use std::{fmt::Debug, vec};
 use rand::Rng;
 use thiserror::Error;
 
@@ -14,7 +14,7 @@ pub enum MatrixError {
     ColOutOfBounds{col_count:usize,accessed_col:usize},
     #[error("This operation (inverse, LU) requires ({row},{col}) to be squre, which isn't")]
     NonSqureError{row:usize,col:usize},
-    #[error("Matrix1 size is:{matrix_size1:?},matrix2 size is {matrix_size1:?}, there's mismatch")]
+    #[error("Matrix1 size is:{matrix_size1:?},matrix2 size is {matrix_size2:?}, there's mismatch")]
     DimensionMismatch{matrix_size1:(usize,usize),matrix_size2:(usize,usize)},
     #[error("attempted to create {row}*{col} matrix from vector/iterator with length {len}")]
     SizeMisMatch{row:usize,col:usize,len:usize},
@@ -23,83 +23,6 @@ pub enum MatrixError {
 }
 
 type Result<T> = std::result::Result<T,MatrixError>;
-
-trait AsVector {
-    fn as_vector(&self) -> &[f64];
-    fn len(&self) -> usize {
-        self.as_vector().len()
-    }
-    fn iter(&self) -> impl Iterator<Item = f64> {
-        self.as_vector().iter().map(|n| *n)
-    }
-    fn try_add<Rhs:AsVector + ?Sized>(&self,rhs:&Rhs) -> Result<impl AsVector> {
-        if self.len() != rhs.len() {
-            return Err(MatrixError::VectorLenUnmatch { len1: self.len(), len2: self.len() })
-        }
-        if self.len() == 0 {
-            return Ok(vec![])
-        }
-        let v:Vec<f64> = self.iter().zip(rhs.iter()).map(|(a,b)| {a+b}).collect();
-        Ok(v)
-    }
-    fn try_dot<Rhs:AsVector + ?Sized>(&self,rhs:&Rhs) -> Result<f64> {
-        if self.len() != rhs.len() {
-            return Err(MatrixError::VectorLenUnmatch { len1: self.len(), len2: self.len() })
-        }
-        Ok(self.iter().zip(rhs.iter()).map(|(a,b)| a*b).sum())
-    }
-    fn scalar_mul<Rhs:Borrow<f64>>(&self,rhs:Rhs) -> impl AsVector {
-        let v:Vec<f64> = self.iter().map(|n| n*rhs.borrow()).collect();
-        v
-    }
-}
-
-impl<T:AsRef<[f64]>> AsVector for T {
-    fn as_vector(&self) -> &[f64] {
-        self.as_ref()
-    }
-}
-
-trait AsMutVector : AsVector {
-    fn as_mut_vector(&mut self) -> &mut [f64];
-    fn iter_mut(&mut self) -> impl Iterator<Item = &mut f64> {
-        self.as_mut_vector().iter_mut()
-    }
-    fn try_add_assign<Rhs:AsVector + ?Sized>(&mut self,rhs:&Rhs) -> Result<()> {
-        if self.len() != rhs.len() {
-            return Err(MatrixError::VectorLenUnmatch { len1: self.len(), len2: self.len() })
-        }
-        if self.len() != 0 {
-            for (left,right) in self.iter_mut().zip(rhs.iter()) {
-                *left += right;
-            }
-        }
-        Ok(())
-    }
-    fn scalar_mul_assign<B:Borrow<f64>>(&mut self,rhs:B) {
-        if self.len() == 0 {
-            return;
-        }
-        for i in self.iter_mut() {
-            *i *= rhs.borrow()
-        }
-    }
-    fn try_swap<Rhs:AsMutVector + ?Sized>(&mut self,rhs:&mut Rhs) -> Result<()> {
-        if self.len() != rhs.len() {
-            return Err(MatrixError::VectorLenUnmatch { len1: self.len(), len2: self.len() })
-        }
-        if self.len() != 0 {
-            self.as_mut_vector().swap_with_slice(rhs.as_mut_vector());
-        }
-        Ok(())
-    }
-}
-
-impl<T:AsMut<[f64]> + AsVector> AsMutVector for T {
-    fn as_mut_vector(&mut self) -> &mut [f64] {
-        self.as_mut()
-    }
-}
 
 // A double precision matrix, row major order
 // which means rows are stored continuously
@@ -157,9 +80,6 @@ impl Matrix {
         debug_assert_eq!(row*col,v.len());
         Ok(Self { row_count: row, col_count: col, elements: v })
     }
-    unsafe fn get_unchecked(&self,row:usize,col:usize) -> f64 {
-        unsafe {*self.elements.get_unchecked(row*self.col_count + col)}
-    }
     pub fn get(&self,row:usize,col:usize) -> Result<f64> {
         debug_assert_eq!(self.row_count*self.col_count,self.elements.len());
         let out_of_bounds = MatrixError::IndexOutOfBounds { matrix_size: 
@@ -169,7 +89,8 @@ impl Matrix {
         if row >= self.row_count || col >= self.col_count {
             return Err(out_of_bounds)
         }
-        self.elements.get(row*self.col_count + col).map(|n| *n).ok_or(out_of_bounds)
+        // if all check passed still panic here, inernal bug user cannot fix.
+        Ok(self.elements[row*self.col_count + col])
     }
     pub fn get_mut(&mut self,row:usize,col:usize) -> Result<&mut f64> {
         debug_assert_eq!(self.row_count*self.col_count,self.elements.len());
@@ -178,9 +99,9 @@ impl Matrix {
             accessed_index: (row,col) 
         };
         if row >= self.row_count || col >= self.col_count {
-            return Err(out_of_bounds)
+            return Err(out_of_bounds);
         }
-        self.elements.get_mut(row*self.col_count + col).ok_or(out_of_bounds)
+        Ok(&mut self.elements[row*self.col_count + col]) 
     }
     pub fn zeros(row:usize,col:usize) -> Self {
         if row*col == 0 {
@@ -423,9 +344,7 @@ impl Matrix {
             let j = index % product_col;
             let mut vec_dot_sum = 0.0;
             for k in 0..dot_length {
-                vec_dot_sum += unsafe {
-                    self.get_unchecked(i,k)*rhs.get_unchecked(k,j)
-                };
+                vec_dot_sum += self.get(i,k).unwrap() * rhs.get(k,j).unwrap();
             }
             elements.push(vec_dot_sum);
         }
@@ -443,26 +362,44 @@ impl Matrix {
         BitSet::new();
         todo!()
     }
+
+    fn assert_dimensions(&self) -> bool {
+        if self.col_count == 0 || self.row_count == 0 {
+            // we don't allow 0 by n or n by 0 matrix.
+            // size 0 matrix is always 0*0
+            assert_eq!(self.col_count,0);
+            assert_eq!(self.row_count,0);
+        }
+        assert_eq!(self.row_count*self.col_count,self.elements.len());
+        true
+    }
+
     pub fn transpose(&self) -> Self {
         let t_row = self.col_count;
         let t_col = self.row_count;
 
-        let mut new_vec = Vec::with_capacity(t_col*t_col);
+        let mut new_vec = Vec::with_capacity(t_row*t_col);
 
         for index in 0..(t_col*t_row) {
             // index in new matrix is j*t_col + i;
             let j = index/t_col;
             let i = index%t_col;
             new_vec.push(
-                unsafe{self.get_unchecked(i,j)}
+                self.get(i, j).unwrap()
             )
         }
 
-        Self {
+        let transposed = Self {
             row_count:t_row,
             col_count:t_col,
             elements:new_vec
-        }
+        };
+
+        // is this good?
+        debug_assert!(transposed.assert_dimensions());
+        debug_assert_eq!(transposed.row_count,self.col_count);
+        debug_assert_eq!(transposed.col_count,self.row_count);
+        transposed
 
     }
     // permutation

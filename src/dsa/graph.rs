@@ -264,57 +264,125 @@ impl Default for Visited {
         Self::new()
     }
 }
-
-struct InDegreeMaps {
-    nonzero:HashMap<usize,usize>,
-    zeros:HashSet<usize>,
+#[derive(Clone,Debug)]
+struct DegreeMap {
+    nonzero_in:HashMap<usize,usize>,
+    zero_in:HashSet<usize>,
+    nonzero_out:HashMap<usize,usize>,
+    zero_out:HashSet<usize>,
     visited:HashSet<usize>
 }
 
-impl InDegreeMaps {
+// first element is node id, second
+impl DegreeMap {
+    fn select_first_n(&self,n:usize) -> HashSet<usize> {
+
+        if n == 0 {
+            return [].into_iter().collect()
+        }
+
+        type NodeID = usize;
+        type NodeInDegree = usize;
+        type NodeOutDegree = usize;
+        type Slot = Option<(NodeID,NodeInDegree,NodeOutDegree)>;
+        let mut slots:Vec<Slot> = vec![None;n];
+
+        for (node_id,in_degree) in self.nonzero_in.iter() {
+            let out_degree = self.nonzero_out.get(node_id).unwrap_or(&0);
+            'inner:for slot in slots.iter_mut() {
+                //slot 不为空
+                if let Some((slot_id,slot_in_degree,slot_out_degree)) = slot.as_mut() {
+                    //寻找出度最大的节点
+                    if out_degree > slot_out_degree {
+                        *slot_id = *node_id; *slot_in_degree = *in_degree; *slot_out_degree = *out_degree;
+                        break 'inner;
+                    }
+                    //出度一样大，选择入度大的节点
+                    if out_degree == slot_out_degree && in_degree > slot_in_degree {
+                        *slot_id = *node_id; *slot_in_degree = *in_degree;
+                        break 'inner;
+                    }
+                // slot 为空，直接插入
+                }else{
+                    *slot = Some((*node_id,*in_degree,*out_degree));
+                }
+            }
+        }
+
+        slots.into_iter().filter_map(|slot| {
+            slot.map(|(node_id,_,_)| node_id)
+        }).collect()
+
+    }
+
     fn shrink_to_fit(&mut self) {
-        self.nonzero.shrink_to_fit();
-        self.zeros.shrink_to_fit();
+        self.nonzero_in.shrink_to_fit();
+        self.zero_in.shrink_to_fit();
+        self.nonzero_out.shrink_to_fit();
+        self.zero_out.shrink_to_fit();
         self.visited.shrink_to_fit();
     }
 
     fn is_finished(&self) -> bool {
-        self.nonzero.is_empty() && self.zeros.is_empty()
+        self.nonzero_in.is_empty() && 
+        self.zero_in.is_empty() &&
+        self.zero_out.is_empty() &&
+        self.nonzero_out.is_empty()
     }
 
     //调整一个节点接下来指向节点的degree
     fn visit_and_change_degree(&mut self, node:&usize, graph:&DirectedGraph) {
-        let Some(next_nodes) = graph.next_nodes(node)
-            else {return};
+        let Some(next_nodes) = graph.next_nodes(node) else {return};
+        let Some(from_nodes) = graph.previous_nodes(node) else {return};
 
         if self.is_visited(node) {
             return;
         }
 
+        //println!("currently visiting node {node}");
         // move the current node into visited
-        self.nonzero.remove(node);
-        self.zeros.remove(node);
+
+        self.nonzero_in.remove(node);
+        self.zero_in.remove(node);
+        self.nonzero_out.remove(node);
+        self.zero_out.remove(node);
+
         self.visited.insert(*node);
 
-        // lower all next nodes' degree by 1
+        // lower all next nodes' in_degree by 1
         // O(E) for loop
-        for node in next_nodes {
+        for node in next_nodes.iter() {
             if self.is_visited(node) {
                 //skip visited next nodes
                 continue
             }
-
-            let degree = self.nonzero.get_mut(node)
+            let in_degree = self.nonzero_in.get_mut(node)
                 // not visited, not in nonzero, must in zeros
                 .expect(&format!("A zero in degree node {node} has been pointed to"));
 
-            if *degree > 1 {
-                *degree -= 1;
+            if *in_degree > 1 {
+                *in_degree -= 1;
             } else {
-                self.nonzero.remove(node);
-                self.zeros.insert(*node);
+                self.nonzero_in.remove(node);
+                self.zero_in.insert(*node);
             }
+        }
 
+        // lower all from nodes' out_degree by 1
+        for node in from_nodes.iter() {
+            if self.is_visited(node) {
+                //skip visited next nodes
+                continue
+            }
+            let out_degree = self.nonzero_out.get_mut(node)
+                // not visited, not in nonzero, must in zeros
+                .expect(&format!("A zero to degree node {node} has pointed to another node"));
+            if *out_degree > 1 {
+                *out_degree -= 1;
+            } else {
+                self.nonzero_out.remove(node);
+                self.zero_out.insert(*node);
+            }
         }
 
     }
@@ -322,8 +390,10 @@ impl InDegreeMaps {
     fn is_visited(&self,node:&usize) -> bool {
         if self.visited.contains(node) {
             // found in visted, must not in zero and nonzero
-            debug_assert!(!self.nonzero.contains_key(node));
-            debug_assert!(!self.zeros.contains(node));
+            debug_assert!(!self.nonzero_in.contains_key(node));
+            debug_assert!(!self.zero_in.contains(node));
+            debug_assert!(!self.nonzero_out.contains_key(node));
+            debug_assert!(!self.zero_out.contains(node));
             return true;
         }
         false
@@ -331,32 +401,41 @@ impl InDegreeMaps {
 
     fn start_nodes(&self) -> HashSet<usize> {
         //寻找尚未visited，且入度为0的节点
-        let mut set = self.zeros.clone();
+        let mut set = self.zero_in.clone();
         set.shrink_to_fit();
         set
     }
 
 }
 
-impl From<&DirectedGraph> for InDegreeMaps {
-    fn from(value: &DirectedGraph) -> Self {
-        let mut nonzero = HashMap::with_capacity_and_hasher(
-            value.nodes_len(), nohash::BuildNoHashHasher::default()
+impl From<&DirectedGraph> for DegreeMap {
+    fn from(map:&DirectedGraph) -> Self {
+        let mut nonzero_in = HashMap::with_capacity_and_hasher(
+        map.nodes_len(), nohash::BuildNoHashHasher::default()
         );
-        let mut zeros = HashSet::with_capacity_and_hasher(
-            value.nodes_len(), nohash::BuildNoHashHasher::default()
+        let mut zero_in = HashSet::with_capacity_and_hasher(
+         map.nodes_len(), nohash::BuildNoHashHasher::default()
         );
-        for (node,edges) in value.nodes.iter() {
-            if edges.from.is_empty() {
-                zeros.insert(*node);
+        let mut nonzero_out = nonzero_in.clone();
+        let mut zero_out = zero_in.clone();
+        for (node,edges) in map.nodes.iter() {
+            if edges.to.is_empty() {
+                zero_out.insert(*node);
             } else {
-                nonzero.insert(*node,edges.from.len());
+                nonzero_out.insert(*node,edges.to.len());
+            }
+            if edges.from.is_empty() {
+                zero_in.insert(*node);
+            } else {
+                nonzero_in.insert(*node,edges.from.len());
             }
         }
-        zeros.shrink_to_fit();
-        nonzero.shrink_to_fit();
-        Self {nonzero,zeros,visited:HashSet::with_capacity_and_hasher(
-            value.nodes_len(), nohash::BuildNoHashHasher::default()
+        nonzero_in.shrink_to_fit();
+        zero_in.shrink_to_fit();
+        nonzero_out.shrink_to_fit();
+        zero_out.shrink_to_fit();
+        Self {nonzero_in,zero_in,nonzero_out,zero_out,visited:HashSet::with_capacity_and_hasher(
+            map.nodes_len(), nohash::BuildNoHashHasher::default()
         )}
     }
 }
@@ -367,8 +446,7 @@ pub struct DirectedGraph {
     nodes:HashMap<usize,Neighbours>
 }
 
-type Layers = Vec<HashSet<usize>>;
-type Loop = HashMap<usize,usize>;
+pub type MigrationSetps = Vec<(bool,HashSet<usize>)>;
 
 impl DirectedGraph {
     pub fn new() -> Self {
@@ -393,11 +471,18 @@ impl DirectedGraph {
         self.edges_len
     }
     //返回一个当前节点的to节点的迭代器
-    fn next_nodes(&self,node:&usize) -> Option<impl IntoIterator<Item = &usize>> {
+    fn next_nodes(&self,node:&usize) -> Option<&HashSet<usize>> {
         if self.nodes_len() == 0 {
             return None;
         }
-        let neighbours = self.nodes.get(node)?.to.iter();
+        let neighbours = &self.nodes.get(node)?.to;
+        Some(neighbours)
+    }
+    fn previous_nodes(&self,node:&usize) -> Option<&HashSet<usize>> {
+        if self.nodes_len() == 0 {
+            return None;
+        }
+        let neighbours = &self.nodes.get(node)?.from;
         Some(neighbours)
     }
     #[cfg(debug_assertions)]
@@ -476,6 +561,24 @@ impl DirectedGraph {
         }
     }
 
+    fn remove_node(&mut self,node:usize) {
+        let Some(neighbours) = self.nodes.remove(&node) else {return};
+        let removed_len = neighbours.from.len() + neighbours.to.len();
+        self.edges_len -= removed_len;
+
+        for pointed_tos in neighbours.to.iter() {
+            if let Some(ne) = self.nodes.get_mut(pointed_tos) {
+                ne.from.remove(&node);
+            }
+        }
+        for pointed_froms in neighbours.from.iter() {
+            if let Some(ne) = self.nodes.get_mut(pointed_froms) {
+                ne.to.remove(&node);
+            }
+        }
+        self.shrink_to_fit();
+    }
+
     pub fn dfs(&self,start_node:usize) -> Option<Vec<usize>> {
         if !self.nodes.contains_key(&start_node) {
             return None;
@@ -501,23 +604,29 @@ impl DirectedGraph {
     }
 
     //visits all node and their next nodes, O(V + E)
-    pub fn topological_sort(&self) -> Result<Layers,(Layers,Loop)> {
-        let mut degree_map:InDegreeMaps = self.into();
+    pub fn migrate_with_vacancy(&mut self,vacancy_len:usize) -> MigrationSetps {
+        let mut degree_map:DegreeMap = (&*self).into();
+
         let mut layers = Vec::with_capacity(self.nodes_len());
         while !degree_map.is_finished() {
-            let current_layer = degree_map.start_nodes();
+
+            //println!("{degree_map:?}");
+
+            let mut need_move_to_vacancy = false;
+            let mut current_layer = degree_map.start_nodes();
             if current_layer.is_empty() {
-                layers.shrink_to_fit();
-                degree_map.shrink_to_fit();
-                return Err((layers,degree_map.nonzero))
+                if vacancy_len == 0 {panic!("cannot perform make-before-break when no vacancy band")}
+                need_move_to_vacancy = true;
+                current_layer = degree_map.select_first_n(vacancy_len);
             }
             for node in current_layer.iter() {
                 degree_map.visit_and_change_degree(node, self);
+                self.remove_node(*node);
             }
-            layers.push(current_layer)
+            layers.push((need_move_to_vacancy,current_layer))
         }
         layers.shrink_to_fit();
-        Ok(layers)
+        layers
     }
 }
 
@@ -528,6 +637,7 @@ impl<A:AsNodeOrEdge> FromIterator<A> for DirectedGraph {
             (_,Some(higher)) => {higher},
             (lower,None) => {lower}
         };
+        let size = 0;
         let mut new_graph = Self::with_capacity(size);
         for node_or_edge in iter {
             match node_or_edge.parse() {
@@ -563,9 +673,11 @@ impl<T> From<T> for DirectedGraph
     where T:AsRef<[(usize,usize)]>
 {
     fn from(value: T) -> Self {
-        let mut new_graph = Self::with_capacity(value.as_ref().len());
+        let size = value.as_ref().len();
+        let size = 0;
+        let mut new_graph = Self::with_capacity(size);
         for (start,end) in value.as_ref() {
-            new_graph.push_pair_with_sizehint(*start, *end,value.as_ref().len());
+            new_graph.push_pair_with_sizehint(*start, *end,size);
         }
         new_graph.shrink_to_fit();
         new_graph
@@ -814,12 +926,17 @@ mod tests{
     #[test]
     fn test_layer_cycle() {
         let edges = [(1,3),(1,4),(2,4),(2,5),(3,6),(4,6),(7,4),(5,8),(6,9),(9,7),(8,9)];
-        let graph:DirectedGraph = edges.into();
+        let mut graph:DirectedGraph = edges.into();
 
-        let (layers,loops) = graph.topological_sort().unwrap_err();
+        let migration_steps = graph.migrate_with_vacancy(3);
 
-        println!("{layers:?}");
-        println!("loop nodes : {loops:?}");
+        for (need_move_to_vacancy,nodes) in migration_steps {
+            if need_move_to_vacancy {
+                println!("Nodes forced move to vacancy: {nodes:?}")
+            }else{
+                println!("regularly moving: {nodes:?} ")
+            }
+        }
 
     }
 }

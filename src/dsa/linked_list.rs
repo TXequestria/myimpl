@@ -55,13 +55,14 @@ type Link<T> = Ptr<Node<T>>;
 pub struct LinkedList<T> {
     head:Link<T>,
     tail:Link<T>,
-    length:usize
+    length:usize,
+    _m:PhantomData<T>
 }
 
 impl<T> LinkedList<T> {
     pub fn new() -> Self {
         Self {
-            head:None,tail:None,length:0
+            head:None,tail:None,length:0,_m:PhantomData
         }
     }
 
